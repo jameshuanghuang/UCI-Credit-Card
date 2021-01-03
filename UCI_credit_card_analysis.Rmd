@@ -1,0 +1,123 @@
+---
+title: "UCI_credit_card"
+author: "JamesHuang"
+date: "1/3/2021"
+output: html_document
+---
+```{r}
+library(h2o)
+h2o.init(nthreads = -1)
+```
+
+```{r}
+library(caret)
+dt<-read.csv("UCI_Credit_Card.csv")
+dt[,"default.payment.next.month"] <- as.factor(dt[,"default.payment.next.month"])
+```
+
+```{r}
+trainIndex <- createDataPartition(dt$default.payment.next.month, p = .8, 
+                                  list = FALSE, 
+                                  times = 1)
+train <- dt[ trainIndex,]
+test  <- dt[-trainIndex,]
+y <- "default.payment.next.month"
+x <- setdiff(names(train), y)
+tr<-as.h2o(train)
+te<-as.h2o(test)
+```
+
+```{r}
+xgb <- h2o.xgboost(x = x,
+                           y = y,
+                           training_frame = tr,
+                           validation_frame = te,
+                           booster = "dart",
+                           normalize_type = "tree",
+                           score_each_iteration = TRUE,
+                           seed = 666)
+
+nB <- h2o.naiveBayes(x = x, y = y,
+                  training_frame = tr,
+                  laplace = 1,
+                  nfolds = 5,
+                  seed = 666)
+```
+```{r}
+#performance = h2o.performance(xgb)
+pred.xgb<-predict(xgb,te[x])
+mean(pred.xgb$predict==te$default.payment.next.month)
+
+pred.nB<-predict(nB,te[x])
+mean(pred.nB$predict==te$default.payment.next.month)
+```
+
+```{r}
+aml <- h2o.automl(x = x, y = y,
+                  training_frame = tr,
+                  max_models = 10,
+                  exclude_algos = c("DRF"),
+                  seed = 666)
+```
+
+```{r}
+lb <- aml@leaderboard
+print(lb, n = nrow(lb))  # Print all rows instead of default (6 rows)
+pred.aml<-predict(aml@leader,te[x])
+mean(pred.aml$predict==te$default.payment.next.month)
+```
+
+```{r}
+library(bnlearn)
+```
+
+```{r}
+DF <- data.frame(
+  dt$LIMIT_BAL, as.factor(dt$SEX),as.factor(dt$EDUCATION),as.factor(dt$MARRIAGE),cut(dt$AGE, 5, labels=c("teen","mid","senior","old","v_old")), as.factor(dt$default.payment.next.month), as.factor(dt$PAY_0), as.factor(dt$PAY_2), as.factor(dt$PAY_3), as.factor(dt$PAY_4), as.factor(dt$PAY_5), as.factor(dt$PAY_6), dt$PAY_AMT1, dt$PAY_AMT2, dt$PAY_AMT3, dt$PAY_AMT4, dt$PAY_AMT5, dt$PAY_AMT6,
+  dt$BILL_AMT1, dt$BILL_AMT2, dt$BILL_AMT3, dt$BILL_AMT4, dt$BILL_AMT5, dt$BILL_AMT6
+  
+  )
+colnames(DF)<-c("CRED_LMT", "SEX", "EDUCATION", "MARRIAGE", "AGE", "DFT", "PAY_0", "PAY_2", "PAY_3", "PAY_4", "PAY_5", "PAY_6", "PAY_AMT1", "PAY_AMT2", "PAY_AMT3", "PAY_AMT4", "PAY_AMT5", "PAY_AMT6", "BILL_AMT1", "BILL_AMT2", "BILL_AMT3", "BILL_AMT4", "BILL_AMT5", "BILL_AMT6")
+bl = matrix(c("DFT", "CRED_LMT", "DFT", "SEX", "DFT", "EDUCATION", "DFT", "MARRIAGE", "DFT", "AGE", "DFT", "PAY_0", "DFT", "PAY_2", "DFT", "PAY_3", "DFT", "PAY_4", "DFT", "PAY_5", "DFT", "PAY_6"), ncol = 2, byrow = TRUE)
+wl = matrix(c("SEX", "CRED_LMT", "EDUCATION", "CRED_LMT", "MARRIAGE", "CRED_LMT", "AGE", "CRED_LMT"), ncol = 2, byrow = TRUE)
+g<-hc(DF, blacklist = bl, whitelist = wl)
+strength<-arc.strength(g, DF)
+graphviz.plot(g, layout = "dot")
+#strength.plot(g, strength, layout = "fdp", shape = "rectangle")
+fit<-bn.fit(g, DF)
+bn.fit.barchart(fit$DFT)
+```
+Build bayesian belief network..
+Pay0 is highly related to DFT, and given the plot it shows if customer repay on time (-2,-1,0) less likely to default(DFT=1)
+*pay=8 means the repayment is 8 months late
+```{r}
+coefficients(fit$DFT)
+md<-glm(DF$DFT ~ DF$PAY_0, family = binomial())
+#use all data 
+#pred<-predict(md,DF$PAY_0, type="response")
+#pred<- ifelse(pred>0.5,1,0)
+#mean(pred==DF$DFT)
+
+X<-train$PAY_0
+md<-glm(train$default.payment.next.month ~X, family = binomial(link = "logit"))
+X<-test$PAY_0
+pred.bn<-predict(md, as.factor(test$PAY_0), type="response")
+pred.bn<- ifelse(pred.bn>0.5,1,0)
+mean(pred.bn==test$default.payment.next.month)
+table(pred.bn,test$default.payment.next.month)
+```
+Simple logisitc regression using pay_0 as predictor already gives 81 accurarcy
+
+```{r}
+#Summary 
+print("naiveBayes")
+mean(pred.nB$predict==te$default.payment.next.month)
+print("xgb")
+mean(pred.xgb$predict==te$default.payment.next.month)
+print("AutoML with 10 training models")
+mean(pred.aml$predict==te$default.payment.next.month)
+print("Bayes Network with simple glm on PAY_0")
+mean(pred.bn==test$default.payment.next.month)
+```
+
+
